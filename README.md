@@ -110,19 +110,37 @@ Full **RV32I** base integer instruction set:
 
 ## Timing
 
-Tested on **Altera DE2 (Cyclone II EP2C35F672C6)**:
+Tested on **Altera DE2 (Cyclone II EP2C35F672C6)**, timing model: Final:
 
 | Metric | Value |
 |--------|-------|
 | Target clock | 50 MHz (20 ns) |
-| Achieved Fmax | **~160 MHz** |
-| Setup slack (WNS) | +3.740 ns |
+| Achieved Fmax | **~72 MHz** |
 | Critical path | EX stage (forwarding → ALU → PCSrc) |
 
 Key optimizations applied:
 - `Zero` signal computed directly from `Sum` (parallel with ALU output mux)
 - Forwarding unit conditions computed as parallel wires before priority select
 - Block RAM inference via synchronous d_mem read
+
+---
+
+## Resource Utilization
+
+Synthesized on **Cyclone II EP2C35F672C6**:
+
+| Resource | Used | Available | Utilization |
+|----------|------|-----------|-------------|
+| Total logic elements | 2,066 | 33,216 | 6% |
+| Combinational functions | 2,024 | 33,216 | 6% |
+| Dedicated logic registers | 713 | 33,216 | 2% |
+| Total registers | 713 | — | — |
+| Total pins | 98 | 475 | 21% |
+| Total memory bits | 34,816 | 483,840 | 7% |
+| Embedded Multiplier 9-bit | 0 | 70 | 0% |
+| PLLs | 0 | 4 | 0% |
+
+The design is extremely lightweight — only **6% logic utilization** on Cyclone II, leaving ample room for peripherals, cache, or RV32M/RV32F extensions. The 7% memory usage corresponds to the synchronous Block RAM (M4K) inferred for `d_mem` and `i_mem`.
 
 ---
 
@@ -160,9 +178,9 @@ The testbench (`tb_Risc_v.v`) runs the full RV32I test program (`full_test.hex`)
 │   └── forwarding_unit.v
 ├── sim/
 │   ├── tb_Risc_v.v
-│   └── full_test.hex
+│   └── program.hex
 ├── constraints/
-│   └── riscv_pipeline.xdc
+│   └── tm.sdc
 ├── riscv_pipeline_datapath.svg
 └── README.md
 ```
