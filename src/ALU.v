@@ -9,7 +9,7 @@ module ALU (
 	assign Sum = A + Temp + ALUControl[0];
 	assign slt = (A[31] == B[31]) ? (A < B) : A[31];
 	assign sltu = A < B;
-	assign Zero = (A == Temp); 
+	assign Zero = (Sum == 0); 
  always @(*) begin 
 	case(ALUControl) 
 			4'b0000: ALU_res = Sum; //sum
