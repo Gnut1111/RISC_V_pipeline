@@ -6,10 +6,7 @@ module Risc_v(
 // ====================== IF Stage ======================
     wire [31:0] pc_next, pc, pcplus4, instr;
     wire PCSrc, stall;
-	 
-	 wire PCSrc_flush = PCSrc;  // cho IF_ID và ID_EX flush
-	 wire PCSrc_pc    = PCSrc; 
-	 
+
     PC PC(
         .clk(clk),
         .reset(reset),
@@ -35,7 +32,7 @@ module Risc_v(
         .clk(clk),
         .reset(reset),
         .enable(~stall),
-        .flush(PCSrc_flush),
+        .flush(PCSrc),
         .PC_in(pc),
         .PC_plus_4_in(pcplus4),
         .instr_in(instr),
@@ -99,7 +96,7 @@ module Risc_v(
         .clk(clk),
         .reset(reset),
         .enable(~stall),
-        .flush(PCSrc_flush | stall),
+        .flush(PCSrc | stall),
         // Control in
         .Branch_in(Branch),
         .MemRead_in(MemRead),
@@ -161,7 +158,7 @@ module Risc_v(
 	 wire [31:0] alu_res_out_WB, PC_plus4_out_WB, d_mem_res_out_WB;
     wire [1:0]  MemtoReg_out_WB;
 	 
-	 wire [31:0] MEM1_MEM2_result =(MemtoReg_out_MEM1 == 2'b01) ? d_mem_res : alu_res_out_MEM1;
+	 wire [31:0] MEM1_MEM2_result = (MemtoReg_out_MEM1 == 2'b01) ? d_mem_res : alu_res_out_MEM1;
 	 wire [31:0] MEM2_WB_result = (MemtoReg_out_WB == 2'b01) ? d_mem_res_out_WB : alu_res_out_WB;
 
     wire [31:0] SrcA_fwd;
@@ -169,7 +166,7 @@ module Risc_v(
     .A(RD1_out_ID),
     .B(alu_res_out_EX),
     .C(MEM1_MEM2_result),
-    .D(MEM2_WB_result),    
+    .D(MEM2_WB_result),
     .ctrl_signal(ForwardA),
     .Mux4_res(SrcA_fwd)
 );
@@ -252,7 +249,7 @@ module Risc_v(
     Mux_2 mux_pc_target(
         .A(pcplus4),
         .B(pc_target_jump),
-        .ctrl_signal(PCSrc_pc),
+        .ctrl_signal(PCSrc),
         .Mux_res(pc_next)
     );
 
@@ -272,7 +269,7 @@ module Risc_v(
         .RegWrite_in(RegWrite_out_ID),
         .MemtoReg_in(MemtoReg_out_ID),
         .alu_res_in(alu_res),
-        .RD2_in(RD2_out_ID),
+        .RD2_in(SrcB_fwd),
         .PC_plus4_in(PC_plus4_out_ID),
         .rd_in(rd_out_ID),
         .funct3_in(funct3_out_ID),
