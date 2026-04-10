@@ -6,7 +6,10 @@ module Risc_v(
 // ====================== IF Stage ======================
     wire [31:0] pc_next, pc, pcplus4, instr;
     wire PCSrc, stall;
-
+	 
+	 wire PCSrc_flush = PCSrc;  // cho IF_ID và ID_EX flush
+	 wire PCSrc_pc    = PCSrc; 
+	 
     PC PC(
         .clk(clk),
         .reset(reset),
@@ -32,7 +35,7 @@ module Risc_v(
         .clk(clk),
         .reset(reset),
         .enable(~stall),
-        .flush(PCSrc),
+        .flush(PCSrc_flush),
         .PC_in(pc),
         .PC_plus_4_in(pcplus4),
         .instr_in(instr),
@@ -96,7 +99,7 @@ module Risc_v(
         .clk(clk),
         .reset(reset),
         .enable(~stall),
-        .flush(PCSrc | stall),
+        .flush(PCSrc_flush | stall),
         // Control in
         .Branch_in(Branch),
         .MemRead_in(MemRead),
@@ -249,7 +252,7 @@ module Risc_v(
     Mux_2 mux_pc_target(
         .A(pcplus4),
         .B(pc_target_jump),
-        .ctrl_signal(PCSrc),
+        .ctrl_signal(PCSrc_pc),
         .Mux_res(pc_next)
     );
 
