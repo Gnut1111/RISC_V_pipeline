@@ -1,5 +1,9 @@
+
+`timescale 1ns/1ps
+
+
 module ID_EX_buf(
-    input clk, reset, enable, flush,
+    input clk, reset, flush,
     
     // Control signals
     input  Branch_in, MemRead_in, MemWrite_in, Jump_in,
@@ -38,7 +42,7 @@ module ID_EX_buf(
             imm_out      <= 32'b0; PC_out      <= 32'b0;
             PC_plus4_out <= 32'b0;
             rs1_out      <= 5'b0; rs2_out <= 5'b0; rd_out <= 5'b0;
-        end else if (enable) begin
+        end else begin
             // Pass control
             Branch_out   <= Branch_in;   MemRead_out  <= MemRead_in;
             MemWrite_out <= MemWrite_in; Jump_out     <= Jump_in;

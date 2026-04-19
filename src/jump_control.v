@@ -1,3 +1,7 @@
+
+`timescale 1ns/1ps
+
+
 module jump_control(
 	input Branch, Jump,
 	input [2:0] func3,

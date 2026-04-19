@@ -1,3 +1,7 @@
+
+`timescale 1ns/1ps
+
+
 module IF_ID_buf(
     input clk, reset, enable, flush,
     input  [31:0] PC_in, PC_plus_4_in, instr_in,

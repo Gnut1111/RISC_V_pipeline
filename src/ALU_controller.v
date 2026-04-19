@@ -1,3 +1,7 @@
+
+`timescale 1ns/1ps
+
+
 module ALU_controller (
 	input [1:0] ALUOp,
 	input [2:0] func3,

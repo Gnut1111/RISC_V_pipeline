@@ -1,3 +1,7 @@
+
+`timescale 1ns/1ps
+
+
 module Mux_3(
     input  [31:0] A, B, C,
     input  [1:0]  ctrl_signal,

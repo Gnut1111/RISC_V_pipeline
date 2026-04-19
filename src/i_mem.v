@@ -1,8 +1,19 @@
+
+`timescale 1ns/1ps
+
 module i_mem(
-	input [31:0] address,
-	output [31:0] instr
+	input clk, we, cs,
+	input [31:0] address, 
+	output reg [31:0] instr
 );
+
 	reg [31:0] mem [511:0];
 	initial $readmemh("program.hex", mem);
-	assign instr = mem[address[31:2]];
+	always @(posedge clk) begin
+	  if(cs) begin	
+		if (we) mem[address[8:2]] <= instr; // word-aligned
+		else instr <= mem[address[8:2]];
+	  end 
+	end
+
 endmodule 

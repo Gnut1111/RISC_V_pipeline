@@ -1,3 +1,7 @@
+
+`timescale 1ns/1ps
+
+
 module imm_gen(
     input  [6:0]  op,
     input  [31:7] instr,

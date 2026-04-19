@@ -1,18 +1,21 @@
+
+`timescale 1ns/1ps
+
+
 module reg_file(
-    input RegWrite, clk,
+    input RegWrite, clk, reset,
     input [4:0] RA1, RA2, WA,
     input [31:0] WD,
     output [31:0] RD1, RD2
 );
     reg [31:0] regfile [31:0];
-    integer j;
-    initial begin
-        for (j = 0; j < 32; j = j + 1)
-            regfile[j] = 32'b0;
+	 integer j;
+    always @(posedge clk or posedge reset) begin
+		  if (reset) begin
+				for (j = 0; j < 32; j = j + 1) regfile[j] <= 32'b0;
+		  end else if (RegWrite && WA != 5'b0) begin
+				regfile[WA] <= WD;
     end
-
-    always @(posedge clk) begin
-        if(RegWrite && WA != 5'b00000) regfile[WA] <= WD;
     end
 
     // Internal forwarding — nếu WB đang ghi vào register đang đọc

@@ -1,3 +1,7 @@
+
+`timescale 1ns/1ps
+
+
 module controller (
 	input [6:0] op,
 	output reg Branch, MemRead, MemWrite, Jump, 

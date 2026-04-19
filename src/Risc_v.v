@@ -1,374 +1,389 @@
 module Risc_v(
-    input clk, reset,
-    output [31:0] out_mem, out_alu, out_rs2
+    input        clk,
+    input         reset,
+
+    output [31:0] alu_out, mem_out, WB_out
 );
 
-// ====================== IF Stage ======================
-    wire [31:0] pc_next, pc, pcplus4, instr;
-    wire PCSrc, stall;
+wire [31:0] pc, pc_next, pc_plus_4, instr;
 
-    PC PC(
-        .clk(clk),
-        .reset(reset),
-        .enable(~stall),
-        .pc_next(pc_next),
-        .pc(pc)
-    );
+wire stallF, stallD, flushE, flushD; // Tín hiệu stall và flush từ hazard detection unit
 
-    PC_Plus_4 plus_4(
-        .PC(pc),
-        .PCPlus4(pcplus4)
-    );
+PC pc_inst (
+    .clk(clk),
+    .reset(reset),
+    .enable(!stallF), // Luôn enable để PC có thể cập nhật
+    .pc_next(pc_next), 
+    .pc(pc)
+);
 
-    i_mem i_mem(
-        .address(pc),
-        .instr(instr)
-    );
+PC_Plus_4 pc_plus_4_inst (
+    .PC(pc),
+    .PCPlus4(pc_plus_4)
+);
 
-// ====================== IF/ID Buffer ======================
-    wire [31:0] PC_out_IF, PC_plus4_out_IF, instr_out_IF;
+wire [31:0] instr_raw;
+i_mem i_mem_inst (
+    .clk(clk),
+    .we(1'b0), // Chỉ đọc từ IMEM
+    .cs(~stallF), // Kích hoạt đọc từ IMEM
+    .address(pc), // Đọc instruction tại PC+4
+    .instr(instr_raw)
+);
+wire PCSrc;
+reg PCSrc_dly;
+always @(posedge clk or posedge reset) begin
+    if (reset) begin
+        PCSrc_dly <= 1'b0;
+    end else begin
+        // IMEM đồng bộ trả dữ liệu trễ 1 chu kỳ, nên cần kill thêm 1 instr sau redirect
+        PCSrc_dly <= PCSrc;
+    end
+end
 
-    IF_ID_buf IF_ID(
-        .clk(clk),
-        .reset(reset),
-        .enable(~stall),
-        .flush(PCSrc),
-        .PC_in(pc),
-        .PC_plus_4_in(pcplus4),
-        .instr_in(instr),
-        .PC_out(PC_out_IF),
-        .PC_plus_4_out(PC_plus4_out_IF),
-        .instr_out(instr_out_IF)
-    );
+reg [31:0] pc_if_dly, pc_plus4_if_dly;
+always @(posedge clk or posedge reset) begin
+    if (reset) begin
+        pc_if_dly <= 32'b0;
+        pc_plus4_if_dly <= 32'b0;
+    end else if (~stallF) begin
+        // Đệm PC/PC+4 1 chu kỳ để đồng bộ với instr_raw từ IMEM đồng bộ
+        pc_if_dly <= pc;
+        pc_plus4_if_dly <= pc_plus_4;
+    end
+end
 
-// ====================== ID Stage ======================
-    wire Branch, MemRead, MemWrite, Jump,
-         ALUSrc, RegWrite, JALR, ALUSrcA;
-    wire [1:0] ALUOp, MemtoReg;
+wire [31:0] instr_ifid_in;
+assign instr_ifid_in = PCSrc_dly ? 32'h00000013 : instr_raw;
 
-    controller control(
-        .op(instr_out_IF[6:0]),
-        .Branch(Branch),
-        .MemRead(MemRead),
-        .MemWrite(MemWrite),
-        .Jump(Jump),
-        .ALUSrc(ALUSrc),
-        .ALUSrcA(ALUSrcA),
-        .RegWrite(RegWrite),
-        .JALR(JALR),
-        .ALUOp(ALUOp),
-        .MemtoReg(MemtoReg)
-    );
+wire [31:0] PC_out_if_id_buf, PC_plus_4_out_if_id_buf;
+IF_ID_buf if_id_buf_inst (
+    .clk(clk),
+    .reset(reset),
+    .enable(~stallD), // Stall IF/ID khi cần thiết
+    .flush(flushD), // Flush ID khi cần thiết
+    .PC_in(pc_if_dly),
+    .PC_plus_4_in(pc_plus4_if_dly),
+    .instr_in(instr_ifid_in),
+    .PC_out(PC_out_if_id_buf),
+    .PC_plus_4_out(PC_plus_4_out_if_id_buf),
+    .instr_out(instr)
+);
 
-    wire [31:0] imm;
-    imm_gen imm_gen(
-        .op(instr_out_IF[6:0]),
-        .instr(instr_out_IF[31:7]),
-        .imm(imm)
-    );
+wire Branch, MemRead, MemWrite, Jump, ALUSrc, RegWrite, JALR, ALUSrcA;
+wire [1:0] ALUOp, MemtoReg;
+controller controller_inst (
+	.op(instr[6:0]),
+	.Branch(Branch),
+	.MemRead(MemRead),
+	.MemWrite(MemWrite),
+	.Jump(Jump),
+	.ALUSrc(ALUSrc),
+	.RegWrite(RegWrite),
+	.JALR(JALR),
+	.ALUSrcA(ALUSrcA),
+	.ALUOp(ALUOp),
+	.MemtoReg(MemtoReg)
+);
 
-    wire [31:0] write_data_regfile;
-    wire [4:0]  rd_out_WB;
-    wire        RegWrite_out_WB;
+wire [31:0] imm;
+imm_gen imm_gen_inst (
+    .op(instr[6:0]),
+    .instr(instr[31:7]),
+    .imm(imm)
+);
 
-    wire [31:0] RD1, RD2;
-    reg_file reg_file(
-        .clk(clk),
-        .RegWrite(RegWrite_out_WB),
-        .RA1(instr_out_IF[19:15]),
-        .RA2(instr_out_IF[24:20]),
-        .WA(rd_out_WB),
-        .WD(write_data_regfile),
-        .RD1(RD1),
-        .RD2(RD2)
-    );
+wire [31:0] RD1, RD2, WD_WB;
 
-// ====================== ID/EX Buffer ======================
-    wire Branch_out_ID, MemRead_out_ID, MemWrite_out_ID, Jump_out_ID,
-         ALUSrc_out_ID, RegWrite_out_ID, JALR_out_ID, ALUSrcA_out_ID;
-    wire [1:0] ALUOp_out_ID, MemtoReg_out_ID;
-    wire [2:0] funct3_out_ID;
-    wire       funct7b5_out_ID, opb5_out_ID;
-    wire [31:0] RD1_out_ID, RD2_out_ID, imm_out_ID, PC_out_ID, PC_plus4_out_ID;
-    wire [4:0]  rs1_out_ID, rs2_out_ID, rd_out_ID;
+wire RegWrite_out_mem_wb_buf;
+wire [4:0] rd_out_mem_wb_buf;
+reg_file reg_file_inst (
+    .RegWrite(RegWrite_out_mem_wb_buf), // Sử dụng tín hiệu RegWrite đã qua pipeline register
+    .clk(clk),
+    .reset(reset),
+    .RA1(instr[19:15]),
+    .RA2(instr[24:20]),
+    .WA(rd_out_mem_wb_buf),
+    .WD(WD_WB),
+    .RD1(RD1),
+    .RD2(RD2)
+);
 
-    ID_EX_buf ID_EX(
-        .clk(clk),
-        .reset(reset),
-        .enable(~stall),
-        .flush(PCSrc | stall),
-        // Control in
-        .Branch_in(Branch),
-        .MemRead_in(MemRead),
-        .MemWrite_in(MemWrite),
-        .Jump_in(Jump),
-        .ALUSrc_in(ALUSrc),
-        .RegWrite_in(RegWrite),
-        .JALR_in(JALR),
-        .ALUSrcA_in(ALUSrcA),
-        .ALUOp_in(ALUOp),
-        .MemtoReg_in(MemtoReg),
-        // Data in
-        .funct3_in(instr_out_IF[14:12]),
-        .funct7b5_in(instr_out_IF[30]),
-        .opb5_in(instr_out_IF[5]),
-        .RD1_in(RD1),
-        .RD2_in(RD2),
-        .imm_in(imm),
-        .PC_in(PC_out_IF),
-        .PC_plus4_in(PC_plus4_out_IF),
-        .rs1_in(instr_out_IF[19:15]),
-        .rs2_in(instr_out_IF[24:20]),
-        .rd_in(instr_out_IF[11:7]),
-        // Control out
-        .Branch_out(Branch_out_ID),
-        .MemRead_out(MemRead_out_ID),
-        .MemWrite_out(MemWrite_out_ID),
-        .Jump_out(Jump_out_ID),
-        .ALUSrc_out(ALUSrc_out_ID),
-        .RegWrite_out(RegWrite_out_ID),
-        .JALR_out(JALR_out_ID),
-        .ALUSrcA_out(ALUSrcA_out_ID),
-        .ALUOp_out(ALUOp_out_ID),
-        .MemtoReg_out(MemtoReg_out_ID),
-        // Data out
-        .funct3_out(funct3_out_ID),
-        .funct7b5_out(funct7b5_out_ID),
-        .opb5_out(opb5_out_ID),
-        .RD1_out(RD1_out_ID),
-        .RD2_out(RD2_out_ID),
-        .imm_out(imm_out_ID),
-        .PC_out(PC_out_ID),
-        .PC_plus4_out(PC_plus4_out_ID),
-        .rs1_out(rs1_out_ID),
-        .rs2_out(rs2_out_ID),
-        .rd_out(rd_out_ID)
-    );
+wire [4:0] rd_out_ex_mem_buf;
 
-// ====================== EX Stage ======================
+wire Branch_out_id_ex_buf , MemRead_out_id_ex_buf, MemWrite_out_id_ex_buf, Jump_out_id_ex_buf, ALUSrc_out_id_ex_buf, RegWrite_out_id_ex_buf, JALR_out_id_ex_buf, ALUSrcA_out_id_ex_buf;
+wire [1:0] ALUOp_out_id_ex_buf, MemtoReg_out_id_ex_buf;
+wire [2:0] funct3_out_id_ex_buf;
+wire funct7b5_out_id_ex_buf, opb5_out_id_ex_buf;
+wire [31:0] RD1_out_id_ex_buf, RD2_out_id_ex_buf, imm_out_id_ex_buf, PC_out_id_ex_buf, PC_plus4_out_id_ex_buf;
+wire [4:0] rs1_out_id_ex_buf, rs2_out_id_ex_buf, rd_out_id_ex_buf;
+ID_EX_buf id_ex_buf_inst (
+    .clk(clk),
+    .reset(reset),
+    .flush(flushE), // Flush EX khi cần thiết
+    
+    // Control signals
+    .Branch_in(Branch),
+    .MemRead_in(MemRead),
+    .MemWrite_in(MemWrite),
+    .Jump_in(Jump),
+    .ALUSrc_in(ALUSrc),
+    .RegWrite_in(RegWrite),
+    .JALR_in(JALR),
+    .ALUSrcA_in(ALUSrcA),
+    .ALUOp_in(ALUOp),
+    .MemtoReg_in(MemtoReg),
 
-    wire [1:0] ForwardA, ForwardB;
-	 wire [1:0]  MemtoReg_out_MEM1;
-	 wire [31:0] d_mem_res;
-	 
-    wire [31:0] alu_res_out_EX;
+    // Data signals
+    .funct3_in(instr[14:12]),
+    .funct7b5_in(instr[30]),
+    .opb5_in(instr[5]),
+    .RD1_in(RD1),
+    .RD2_in(RD2),
+    .imm_in(imm),
+    .PC_in(PC_out_if_id_buf),
+    .PC_plus4_in(PC_plus_4_out_if_id_buf),
+    .rs1_in(instr[19:15]),
+    .rs2_in(instr[24:20]),
+    .rd_in(instr[11:7]),
 
-    wire [31:0] alu_res_out_MEM1;
-	 
-	 wire [31:0] alu_res_out_WB, PC_plus4_out_WB, d_mem_res_out_WB;
-    wire [1:0]  MemtoReg_out_WB;
-	 
-	 wire [31:0] MEM1_MEM2_result = (MemtoReg_out_MEM1 == 2'b01) ? d_mem_res : alu_res_out_MEM1;
-	 wire [31:0] MEM2_WB_result = (MemtoReg_out_WB == 2'b01) ? d_mem_res_out_WB : alu_res_out_WB;
+    // Control signals out
+    .Branch_out(Branch_out_id_ex_buf),
+    .MemRead_out(MemRead_out_id_ex_buf),
+    .MemWrite_out(MemWrite_out_id_ex_buf),
+    .Jump_out(Jump_out_id_ex_buf),
+    .ALUSrc_out(ALUSrc_out_id_ex_buf),
+    .RegWrite_out(RegWrite_out_id_ex_buf),
+    .JALR_out(JALR_out_id_ex_buf),
+    .ALUSrcA_out(ALUSrcA_out_id_ex_buf),
+    .ALUOp_out(ALUOp_out_id_ex_buf),
+    .MemtoReg_out(MemtoReg_out_id_ex_buf),
 
-    wire [31:0] SrcA_fwd;
-    Mux_4 mux_forwardA(
-    .A(RD1_out_ID),
-    .B(alu_res_out_EX),
-    .C(MEM1_MEM2_result),
-    .D(MEM2_WB_result),
+    // Data signals out
+    .funct3_out(funct3_out_id_ex_buf),
+    .funct7b5_out(funct7b5_out_id_ex_buf),
+    .opb5_out(opb5_out_id_ex_buf),
+    .RD1_out(RD1_out_id_ex_buf),
+    .RD2_out(RD2_out_id_ex_buf),
+    .imm_out(imm_out_id_ex_buf),
+    .PC_out(PC_out_id_ex_buf),
+    .PC_plus4_out(PC_plus4_out_id_ex_buf),
+    .rs1_out(rs1_out_id_ex_buf),
+    .rs2_out(rs2_out_id_ex_buf),
+    .rd_out(rd_out_id_ex_buf)
+);
+
+wire [1:0] ForwardA, ForwardB;
+wire [31:0] SrcA_fwd, SrcB_fwd, SrcA, SrcB, alu_res_out_ex_mem_buf;
+Mux_3 ForwardA_Mux (
+    .A(RD1_out_id_ex_buf),
+    .B(alu_res_out_ex_mem_buf),
+    .C(WD_WB),
     .ctrl_signal(ForwardA),
-    .Mux4_res(SrcA_fwd)
+    .Mux3_res(SrcA_fwd)
+);
+Mux_2 SrcA_Mux (
+    .A(SrcA_fwd),
+    .B(PC_out_id_ex_buf),
+    .ctrl_signal(ALUSrcA_out_id_ex_buf),
+    .Mux_res(SrcA)
 );
 
 
-    wire [31:0] SrcA;
-    Mux_2 mux_srcALU_A(
-        .A(SrcA_fwd),          
-        .B(PC_out_ID),         
-        .ctrl_signal(ALUSrcA_out_ID),
-        .Mux_res(SrcA)
-    );
-
-    wire [31:0] SrcB_fwd;
-    Mux_4 mux_forwardB(
-    .A(RD2_out_ID),
-    .B(alu_res_out_EX),
-    .C(MEM1_MEM2_result),
-    .D(MEM2_WB_result),    
+Mux_3 mux_forwardB (
+    .A(RD2_out_id_ex_buf),
+    .B(alu_res_out_ex_mem_buf),
+    .C(WD_WB),
     .ctrl_signal(ForwardB),
-    .Mux4_res(SrcB_fwd)
+    .Mux3_res(SrcB_fwd)
+);
+Mux_2 SrcB_Mux (
+    .A(SrcB_fwd),
+    .B(imm_out_id_ex_buf),
+    .ctrl_signal(ALUSrc_out_id_ex_buf),
+    .Mux_res(SrcB)
 );
 
-    wire [31:0] SrcB;
-    Mux_2 mux_srcALU_B(
-        .A(SrcB_fwd),          
-        .B(imm_out_ID),        
-        .ctrl_signal(ALUSrc_out_ID),
-        .Mux_res(SrcB)
-    );
+wire [3:0] ALUControl;
+ALU_controller alu_controller_inst (
+	.ALUOp(ALUOp_out_id_ex_buf),
+	.func3(funct3_out_id_ex_buf),
+	.func7b5(funct7b5_out_id_ex_buf),
+	.opb5(opb5_out_id_ex_buf),
+	.ALUControl(ALUControl)
+);
 
-    wire [3:0] ALU_Control;
-    ALU_controller alu_ctrl(
-        .ALUOp(ALUOp_out_ID),
-        .func3(funct3_out_ID),
-        .func7b5(funct7b5_out_ID),
-        .opb5(opb5_out_ID),
-        .ALUControl(ALU_Control)
-    );
+wire [31:0] ALU_res;
+wire Zero, slt, sltu;
+ALU ALU_inst (
+	.A(SrcA),
+	.B(SrcB),
+	.ALUControl(ALUControl),
+	.ALU_res(ALU_res),
+	.Zero(Zero),
+	.slt(slt),
+	.sltu(sltu)
+);
 
-    wire [31:0] alu_res;
-    wire zero_signal, slt_signal, sltu_signal;
-    ALU alu(
-        .A(SrcA),
-        .B(SrcB),
-        .ALUControl(ALU_Control),
-        .ALU_res(alu_res),
-        .Zero(zero_signal),
-        .slt(slt_signal),
-        .sltu(sltu_signal)
-    );
+wire [31:0] Src_adder;
+Mux_2 Src_adder_mux2 (
+    .A(PC_out_id_ex_buf),
+    .B(SrcA_fwd),
+    .ctrl_signal(JALR_out_id_ex_buf),
+    .Mux_res(Src_adder)
+);
 
-    wire [31:0] Src_add_pc;
-    Mux_2 mux_j_type(
-        .A(PC_out_ID),         
-        .B(SrcA_fwd),          
-        .ctrl_signal(JALR_out_ID),
-        .Mux_res(Src_add_pc)
-    );
+wire [31:0] Res_adder;
+adder adder_inst (
+	.a(Src_adder),
+    .b(imm_out_id_ex_buf),
+    .res(Res_adder)
+);
 
-    wire [31:0] pc_target;
-    adder add(
-        .a(Src_add_pc),
-        .b(imm_out_ID),
-        .res(pc_target)
-    );
+jump_control jump_control_inst (
+	.Branch(Branch_out_id_ex_buf),
+	.Jump(Jump_out_id_ex_buf),
+	.func3(funct3_out_id_ex_buf),
+	.Zero(Zero),
+	.slt(slt),
+	.sltu(sltu),
+	.PCSrc(PCSrc)
+);
 
-    wire [31:0] pc_target_jump = JALR_out_ID ? {pc_target[31:1], 1'b0} : pc_target;
+Mux_2 PCSrc_mux (
+    .A(pc_plus_4),
+    .B(Res_adder),
+    .ctrl_signal(PCSrc),
+    .Mux_res(pc_next)
+);
 
-    jump_control jump_control(
-        .Branch(Branch_out_ID),
-        .Jump(Jump_out_ID),
-        .func3(funct3_out_ID),
-        .Zero(zero_signal),
-        .slt(slt_signal),
-        .sltu(sltu_signal),
-        .PCSrc(PCSrc)
-    );
+wire mem_read_out_ex_mem_buf, mem_write_out_ex_mem_buf, RegWrite_out_ex_mem_buf;
+wire [1:0] MemtoReg_out_ex_mem_buf;
+wire [31:0] RD2_out_ex_mem_buf, PC_plus4_out_ex_mem_buf;
+wire [2:0] funct3_out_ex_mem_buf;
+EX_MEM1_buf ex_mem1_buf_inst (
+    .clk(clk), .reset(reset),
 
-    Mux_2 mux_pc_target(
-        .A(pcplus4),
-        .B(pc_target_jump),
-        .ctrl_signal(PCSrc),
-        .Mux_res(pc_next)
-    );
+    // Control — MEM
+    .mem_read_in(MemRead_out_id_ex_buf),
+    .mem_write_in(MemWrite_out_id_ex_buf),
+    // Control — WB
+    .RegWrite_in(RegWrite_out_id_ex_buf),
+    .MemtoReg_in(MemtoReg_out_id_ex_buf),
 
-// ====================== EX/MEM1 Buffer ======================
-    wire mem_read_out_EX, mem_write_out_EX;
-    wire RegWrite_out_EX;
-    wire [1:0] MemtoReg_out_EX;
-    wire [31:0] RD2_out_EX, PC_plus4_out_EX;
-    wire [4:0]  rd_out_EX;
-    wire [2:0]  funct3_out_EX;
+    // Data
+    .alu_res_in(ALU_res),
+    .RD2_in(SrcB_fwd),
+    .PC_plus4_in(PC_plus4_out_id_ex_buf),
+    .rd_in(rd_out_id_ex_buf),
+    .funct3_in(funct3_out_id_ex_buf),
 
-    EX_MEM1_buf EX_MEM1(
-        .clk(clk),
-        .reset(reset),
-        .mem_read_in(MemRead_out_ID),
-        .mem_write_in(MemWrite_out_ID),
-        .RegWrite_in(RegWrite_out_ID),
-        .MemtoReg_in(MemtoReg_out_ID),
-        .alu_res_in(alu_res),
-        .RD2_in(SrcB_fwd),
-        .PC_plus4_in(PC_plus4_out_ID),
-        .rd_in(rd_out_ID),
-        .funct3_in(funct3_out_ID),
-        .mem_read_out(mem_read_out_EX),
-        .mem_write_out(mem_write_out_EX),
-        .RegWrite_out(RegWrite_out_EX),
-        .MemtoReg_out(MemtoReg_out_EX),
-        .alu_res_out(alu_res_out_EX),
-        .RD2_out(RD2_out_EX),
-        .PC_plus4_out(PC_plus4_out_EX),
-        .rd_out(rd_out_EX),
-        .funct3_out(funct3_out_EX)
-    );
+    // Control signals out — MEM
+    .mem_read_out(mem_read_out_ex_mem_buf),
+    .mem_write_out(mem_write_out_ex_mem_buf),
+    // Control signals out — WB
+    .RegWrite_out(RegWrite_out_ex_mem_buf),
+    .MemtoReg_out(MemtoReg_out_ex_mem_buf),
 
-// ====================== MEM1 Stage ======================
-    d_mem d_mem(
-        .clk(clk),
-        .mem_read(mem_read_out_EX),
-        .mem_write(mem_write_out_EX),
-        .funct3(funct3_out_EX),
-        .addr(alu_res_out_EX),
-        .wd(RD2_out_EX),
-        .rd(d_mem_res)
-    );
+    // Data out
+    .alu_res_out(alu_res_out_ex_mem_buf),
+    .RD2_out(RD2_out_ex_mem_buf),
+    .PC_plus4_out(PC_plus4_out_ex_mem_buf),
+    .rd_out(rd_out_ex_mem_buf),
+    .funct3_out(funct3_out_ex_mem_buf)
+);
 
-// ====================== MEM1/MEM2 Buffer ======================
-    wire [31:0] PC_plus4_out_MEM1;
-    wire [4:0]  rd_out_MEM1;
-    wire        RegWrite_out_MEM1;
+wire [3:0] wmask;
+dmem_wmask_gen dmem_wmask_gen_inst (
+    .funct3(funct3_out_ex_mem_buf),
+    .byte_offset(alu_res_out_ex_mem_buf[1:0]),
+    .mem_write(mem_write_out_ex_mem_buf),
+    .wmask(wmask)
+);
 
-    MEM1_MEM2_buf MEM1_MEM2(
-        .clk(clk),
-        .reset(reset),
-        .alu_res_in(alu_res_out_EX),
-        .PC_plus4_in(PC_plus4_out_EX),
-        .rd_in(rd_out_EX),
-        .RegWrite_in(RegWrite_out_EX),
-        .MemtoReg_in(MemtoReg_out_EX),
-        .alu_res_out(alu_res_out_MEM1),
-        .PC_plus4_out(PC_plus4_out_MEM1),
-        .rd_out(rd_out_MEM1),
-        .RegWrite_out(RegWrite_out_MEM1),
-        .MemtoReg_out(MemtoReg_out_MEM1)
-    );
+wire [31:0] rdata;
+d_mem d_mem_inst (
+    .clk(clk),
+    .we(mem_write_out_ex_mem_buf),
+    .addr(alu_res_out_ex_mem_buf),
+    .wdata(RD2_out_ex_mem_buf),
+    .rdata(rdata)
+);
 
-// ====================== MEM2/WB Buffer ======================
+wire [31:0] alu_res_out_mem_wb_buf, PC_plus4_out_mem_wb_buf, d_mem_res_out_mem_wb_buf;
+wire [1:0] MemtoReg_out_mem_wb_buf;
+wire [2:0] funct3_out_mem_wb_buf;
+MEM2_WB_buf mem2_wb_buf_inst (
+    .clk(clk),
+    .reset(reset),
+    // Data
+    .alu_res_in(alu_res_out_ex_mem_buf),
+    .PC_plus4_in(PC_plus4_out_ex_mem_buf),
+    .d_mem_res_in(),
+    .rd_in(rd_out_ex_mem_buf),
+    .funct3_in(funct3_out_ex_mem_buf),
+    // Control
+    .RegWrite_in(RegWrite_out_ex_mem_buf),
+    .MemtoReg_in(MemtoReg_out_ex_mem_buf),
+    // Data out
+    .alu_res_out(alu_res_out_mem_wb_buf),
+    .PC_plus4_out(PC_plus4_out_mem_wb_buf),
+    .d_mem_res_out(),
+    .rd_out(rd_out_mem_wb_buf),
+    .funct3_out(funct3_out_mem_wb_buf),
+    // Control out
+    .RegWrite_out(RegWrite_out_mem_wb_buf),
+    .MemtoReg_out(MemtoReg_out_mem_wb_buf)
+);
 
-    MEM2_WB_buf MEM2_WB(
-        .clk(clk),
-        .reset(reset),
-        .alu_res_in(alu_res_out_MEM1),
-        .PC_plus4_in(PC_plus4_out_MEM1),
-        .d_mem_res_in(d_mem_res),
-        .rd_in(rd_out_MEM1),
-        .RegWrite_in(RegWrite_out_MEM1),
-        .MemtoReg_in(MemtoReg_out_MEM1),
-        .alu_res_out(alu_res_out_WB),
-        .PC_plus4_out(PC_plus4_out_WB),
-        .d_mem_res_out(d_mem_res_out_WB),
-        .rd_out(rd_out_WB),
-        .RegWrite_out(RegWrite_out_WB),
-        .MemtoReg_out(MemtoReg_out_WB)
-    );
+wire [31:0] rdata_decoded;
+dmem_decode dmem_decode_inst (
+    .word_data(rdata),     // raw word từ SRAM
+    .funct3(funct3_out_mem_wb_buf),        // từ pipeline register
+    .byte_offset(alu_res_out_mem_wb_buf[1:0]),   // addr[1:0] từ pipeline register
+    .rd(rdata_decoded)         // data đã decode
+);
 
-// ====================== WB Stage ======================
-    Mux_3 mux_mem_to_reg(
-        .A(alu_res_out_WB),
-        .B(d_mem_res_out_WB),
-        .C(PC_plus4_out_WB),
-        .ctrl_signal(MemtoReg_out_WB),
-        .Mux3_res(write_data_regfile)
-    );
+Mux_3 MemtoReg_mux (
+    .A(alu_res_out_mem_wb_buf),
+    .B(rdata_decoded), // Dữ liệu thô từ SRAM (chưa decode)
+    .C(PC_plus4_out_mem_wb_buf),
+    .ctrl_signal(MemtoReg_out_mem_wb_buf),
+    .Mux3_res(WD_WB)
+);
 
-// ====================== Hazard Detection ======================
-    hazard_detection hazard(
-        .ID_EX_MemRead(MemRead_out_ID),
-        .ID_EX_rd(rd_out_ID),
-        .IF_ID_rs1(instr_out_IF[19:15]),
-        .IF_ID_rs2(instr_out_IF[24:20]),
-        .stall(stall)
-    );
 
-// ====================== Forwarding Unit ======================
-    forwarding_unit fwd(
-    .ID_EX_rs1(rs1_out_ID),
-    .ID_EX_rs2(rs2_out_ID),
-    .EX_MEM1_RegWrite(RegWrite_out_EX),
-    .EX_MEM1_rd(rd_out_EX),
-    .MEM1_MEM2_RegWrite(RegWrite_out_MEM1),
-    .MEM1_MEM2_rd(rd_out_MEM1),
-    .MEM2_WB_RegWrite(RegWrite_out_WB),    
-    .MEM2_WB_rd(rd_out_WB),              
+forwarding_unit forwarding_unit_inst (
+    .ID_EX_rs1(rs1_out_id_ex_buf),
+    .ID_EX_rs2(rs2_out_id_ex_buf),
+    .EX_MEM1_RegWrite(RegWrite_out_ex_mem_buf),
+    .EX_MEM1_rd(rd_out_ex_mem_buf),
+
+    .MEM2_WB_RegWrite(RegWrite_out_mem_wb_buf),
+    .MEM2_WB_rd(rd_out_mem_wb_buf),
+
     .ForwardA(ForwardA),
     .ForwardB(ForwardB)
 );
 
-
-    assign out_mem = d_mem_res_out_WB;
-    assign out_alu = alu_res_out_WB;
-    assign out_rs2 = RD2_out_ID;
-
+hazard_detection hazard_detection_inst (
+    .ID_EX_MemRead(MemRead_out_id_ex_buf),
+    .PCSrc(PCSrc),
+    .ID_EX_rd(rd_out_id_ex_buf),
+    .IF_ID_rs1(instr[19:15]), // Lấy trực tiếp từ IF/ID vì hazard detection cần thông tin này sớm
+    .IF_ID_rs2(instr[24:20]),
+    .stallF(stallF),
+    .stallD(stallD),
+    .flushE(flushE),
+    .flushD(flushD)
+);
+reg [31:0] alu_out_reg, mem_out_reg, WB_out_reg;
+always @(posedge clk) begin
+    alu_out_reg <= ALU_res;
+	 mem_out_reg <= rdata_decoded;
+	 WB_out_reg <= WD_WB;
+end
+assign alu_out = alu_out_reg;
+assign mem_out = mem_out_reg;
+assign WB_out = WB_out_reg;
 endmodule
